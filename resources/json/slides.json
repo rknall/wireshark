@@ -1,0 +1,56 @@
+{
+	"schema_version": 1,
+	"general": {
+		"slide_types": {
+			"events": {
+				"color_start": "#1a4a6e",
+				"color_end": "#234d6e"
+			},
+			"sponsorship": {
+				"color_start": "#2d4a3e",
+				"color_end": "#1e3a32"
+			},
+			"tips": {
+				"color_start": "#4a3d6e",
+				"color_end": "#3a2d5e"
+			}
+		}
+	},
+	"slides": [
+		{
+			"type": "events",
+			"tag": "Conference",
+			"title": "SharkFest'26 US",
+			"description": "Nashville, Tennessee",
+			"description_sub": "July 18-23, 2026",
+			"body_text": "Join the annual Wireshark developer and user conference for talks, training, and community.",
+			"button_label": "Learn More",
+			"url": "https://sharkfest.wireshark.org/sfus/",
+			"image": "sharkfestus.png",
+			"date_from": "2025-12-01",
+			"date_until": "2026-07-23"
+		},
+		{
+			"type": "sponsorship",
+			"tag": "Sponsors",
+			"title": "Support Wireshark",
+			"description": "Help keep Wireshark free",
+			"description_sub": "and open source",
+			"body_text": "Your sponsorship funds development, infrastructure, and community events.",
+			"button_label": "Become a Sponsor",
+			"url": "https://wiresharkfoundation.org/donate/",
+			"image": "sponsors.png"
+		},
+		{
+			"type": "tips",
+			"tag": "Tip of the Day",
+			"title": "Quick Filter Shortcut",
+			"description": "Right-click any field to apply as filter",
+			"description_sub": "Press Ctrl+/ for more shortcuts",
+			"body_text": "You can also middle-click to append to the current filter, or Shift+click to create a negated filter.",
+			"button_label": "More Tips",
+			"url": "https://www.wireshark.org/docs/wsug_html_chunked/ChWorkBuildDisplayFilterSection.html",
+			"image": "tipstricks.png"
+		}
+	]
+}
