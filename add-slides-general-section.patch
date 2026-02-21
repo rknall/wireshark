@@ -1,0 +1,925 @@
+From cfbe287eb272668d315dad395dc4d8a3e3c226ed Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Feb 2026 08:17:06 +0000
+Subject: [PATCH] Qt: Add general section to slides.json for slide type
+ configuration
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add a top-level "general" object to slides.json that lets the slide deck
+configure the visual appearance of each slide type without any C++ changes.
+The initial use-case is gradient colours for the banner widget background.
+
+JSON structure:
+
+  "general": {
+      "slide_types": {
+          "events":      { "color_start": "#rrggbb", "color_end": "#rrggbb" },
+          "sponsorship": { "color_start": "#rrggbb", "color_end": "#rrggbb" },
+          "tips":        { "color_start": "#rrggbb", "color_end": "#rrggbb" }
+      }
+  }
+
+C++ changes (info_banner_widget):
+- Add SlideTypeConfig struct (color_start, color_end) to the header.
+- Add slide_type_configs_ map (BannerSlideType → SlideTypeConfig).
+- loadSlidesFromResource() now parses "general.slide_types" and populates
+  the map before parsing the slides array; works for both default and
+  custom JSON resources, with custom entries overriding defaults.
+- gradientForType() is now a const method that consults slide_type_configs_
+  and falls back to the built-in palette when a type is absent.
+
+doc/README.slides documents the new section, including how custom JSON
+files can override colours for retheming without touching the source tree.
+
+https://claude.ai/code/session_01UEpD4kktUn2RSQ2d4guPrt
+---
+ doc/README.slides                    | 228 +++++++++++++
+ resources/json/slides.json           |  56 ++++
+ ui/qt/widgets/info_banner_widget.cpp | 473 +++++++++++++++++++++++++++
+ ui/qt/widgets/info_banner_widget.h   |  94 ++++++
+ 4 files changed, 851 insertions(+)
+ create mode 100644 doc/README.slides
+ create mode 100644 resources/json/slides.json
+ create mode 100644 ui/qt/widgets/info_banner_widget.cpp
+ create mode 100644 ui/qt/widgets/info_banner_widget.h
+
+diff --git a/doc/README.slides b/doc/README.slides
+new file mode 100644
+index 0000000000..4b2e1e9b90
+--- /dev/null
++++ b/doc/README.slides
+@@ -0,0 +1,228 @@
++Welcome Page Banner Slides
++==========================
++
++The welcome page in Wireshark and Stratoshark displays a rotating banner
++carousel with slides for events, sponsorship, and tips.  Slide content is
++loaded from JSON resource files at startup rather than being hardcoded.
++
++This document explains how the system works and how distributors or
++developers can add custom slides.
++
++
++Source Files
++------------
++
++  resources/json/slides.json              Default slide deck (shipped in source tree)
++  resources/json/banners/                 Banner images referenced by slides
++  ui/qt/widgets/info_banner_widget.h      BannerSlide / SlideTypeConfig structs and widget
++  ui/qt/widgets/info_banner_widget.cpp    JSON loading and rendering logic
++  ui/qt/CMakeLists.txt                    QRC generation (Wireshark)
++  ui/stratoshark/CMakeLists.txt           QRC generation (Stratoshark)
++
++
++JSON Schema
++-----------
++
++Slide files use the following top-level structure:
++
++  {
++      "schema_version": 1,
++      "general": { ... },   // optional – configures slide-type appearance
++      "slides":  [ ... ]    // required – array of slide objects
++  }
++
++
++General Section
++---------------
++
++The optional "general" object configures global presentation settings that
++apply to all slides.  Currently it supports one sub-key: "slide_types".
++
++  "general": {
++      "slide_types": {
++          "events": {
++              "color_start": "#1a4a6e",
++              "color_end":   "#234d6e"
++          },
++          "sponsorship": {
++              "color_start": "#2d4a3e",
++              "color_end":   "#1e3a32"
++          },
++          "tips": {
++              "color_start": "#4a3d6e",
++              "color_end":   "#3a2d5e"
++          }
++      }
++  }
++
++slide_types keys:
++
++  events       Configuration for event/conference slides.
++  sponsorship  Configuration for sponsorship slides.
++  tips         Configuration for tips/tricks slides.
++
++Per-type fields:
++
++  color_start  CSS hex colour string (#rrggbb or #aarrggbb) for the start
++               of the 145-degree background gradient.
++  color_end    CSS hex colour string for the end of the gradient.
++
++Both colour fields are optional.  If a type is omitted from slide_types,
++or if the general section is absent entirely, the widget falls back to its
++built-in default colours for that type.
++
++Custom JSON files (see "Custom Slides for Distributors" below) can also
++provide a general section.  Its slide_types entries are merged with (and
++override) those from the default slides.json, allowing distributors to
++retheme the carousel without touching the default file.
++
++
++Slides Array
++------------
++
++Each entry in the "slides" array is an object:
++
++  {
++      "type":            "events",
++      "tag":             "Conference",
++      "title":           "SharkFest'26 US",
++      "description":     "Nashville, Tennessee",
++      "description_sub": "July 18-23, 2026",
++      "body_text":       "Join the annual Wireshark developer and user conference...",
++      "button_label":    "Learn More",
++      "url":             "https://sharkfest.wireshark.org/sfus/",
++      "image":           "sharkfestus.png",
++      "date_from":       "2025-12-01",
++      "date_until":      "2026-07-23"
++  }
++
++Field reference:
++
++  schema_version   Required (top-level). Must be 1 or higher.
++  slides           Required (top-level). Array of slide objects.
++
++Per-slide fields:
++
++  type             Required. One of: "events", "sponsorship", "tips".
++                   Maps to BannerSlideType enum. Unknown types are skipped
++                   with a warning.
++  tag              Optional. Short label shown as a pill/badge above the
++                   title (e.g. "Conference", "Tip of the Day").
++  title            Optional. Main heading text.
++  description      Optional. Primary text shown in the highlight box.
++  description_sub  Optional. Secondary line in the highlight box.
++  body_text        Optional. Additional paragraph below the highlight box.
++  button_label     Optional. Text for the action button.
++  url              Optional. Target URL opened when the slide or button
++                   is clicked.
++  image            Optional. Filename of a banner image resolved at runtime
++                   under :/json/banners/.  If empty or missing a
++                   semi-transparent overlay is shown instead.
++  date_from        Optional. ISO 8601 date (YYYY-MM-DD). The slide is
++                   hidden before this date.
++  date_until       Optional. ISO 8601 date (YYYY-MM-DD). The slide is
++                   hidden after this date.
++
++Slides without date fields are always visible (subject to the per-type
++visibility preference).  Slide strings are intentionally not translatable;
++content changes frequently and translation lag would be worse than
++untranslated text.
++
++
++Banner Images
++-------------
++
++Place image files in resources/json/banners/.  All files in this directory
++are automatically picked up by CMake (via file(GLOB)) and embedded in the
++Qt resource system under the :/json/banners/ prefix.
++
++No CMake changes are needed when adding or removing images.
++
++Recommended dimensions: 600×240 px (2× the logical 300×120 display area,
++suitable for HiDPI/Retina).  The image is scaled to fill the illustration
++area and center-cropped.  Top corners are rounded with an 8 px radius, so
++avoid placing critical content in the top ~10 px corners.
++
++
++Custom Slides for Distributors
++------------------------------
++
++Distributors can inject additional slides and override slide-type colours at
++build time without modifying the source tree.
++
++CMake cache variable:
++
++  CUSTOM_SLIDES_JSON    Path to a custom slides JSON file.
++
++Usage:
++
++  cmake -DCUSTOM_SLIDES_JSON=/path/to/my_slides.json ..
++
++The custom file must use the same JSON schema as slides.json.  It is
++embedded as :/json/slides_custom.json and loaded after the default slides.
++If the path does not exist it is silently ignored.
++
++Custom slides are appended after the default slides.  If the custom file
++also contains a "general" section its slide_types colour entries override
++the defaults from slides.json, allowing full retheming.
++
++Example custom_slides.json:
++
++  {
++      "schema_version": 1,
++      "general": {
++          "slide_types": {
++              "events": {
++                  "color_start": "#5a1a6e",
++                  "color_end":   "#3a0d4e"
++              }
++          }
++      },
++      "slides": [
++          {
++              "type":         "events",
++              "tag":          "Local Event",
++              "title":        "Wireshark Meetup",
++              "description":  "Your City, Your Country",
++              "description_sub": "March 15, 2026",
++              "body_text":    "Join us for a local Wireshark user group meeting.",
++              "button_label": "RSVP",
++              "url":          "https://example.com/meetup",
++              "image":        "",
++              "date_from":    "2026-02-01",
++              "date_until":   "2026-03-15"
++          }
++      ]
++  }
++
++
++Adding a New Default Slide
++--------------------------
++
++1. Edit resources/json/slides.json and add a new entry to the "slides" array.
++
++2. If the slide needs a banner image, place the file in
++   resources/json/banners/ and set the "image" field to the filename.
++
++3. Use date_from and date_until to time-limit the slide when it is for a
++   specific event.
++
++4. Rebuild.  CMake picks up new banner images automatically; no other file
++   changes are required.
++
++
++Changing Slide-Type Colours
++----------------------------
++
++Edit the "general.slide_types" section in resources/json/slides.json and
++set the hex colour values for the gradient start and end points.  The
++change takes effect after a rebuild; no C++ changes are needed.
++
++  "general": {
++      "slide_types": {
++          "events": {
++              "color_start": "#rrggbb",
++              "color_end":   "#rrggbb"
++          }
++      }
++  }
+diff --git a/resources/json/slides.json b/resources/json/slides.json
+new file mode 100644
+index 0000000000..430015fc6d
+--- /dev/null
++++ b/resources/json/slides.json
+@@ -0,0 +1,56 @@
++{
++	"schema_version": 1,
++	"general": {
++		"slide_types": {
++			"events": {
++				"color_start": "#1a4a6e",
++				"color_end": "#234d6e"
++			},
++			"sponsorship": {
++				"color_start": "#2d4a3e",
++				"color_end": "#1e3a32"
++			},
++			"tips": {
++				"color_start": "#4a3d6e",
++				"color_end": "#3a2d5e"
++			}
++		}
++	},
++	"slides": [
++		{
++			"type": "events",
++			"tag": "Conference",
++			"title": "SharkFest'26 US",
++			"description": "Nashville, Tennessee",
++			"description_sub": "July 18-23, 2026",
++			"body_text": "Join the annual Wireshark developer and user conference for talks, training, and community.",
++			"button_label": "Learn More",
++			"url": "https://sharkfest.wireshark.org/sfus/",
++			"image": "sharkfestus.png",
++			"date_from": "2025-12-01",
++			"date_until": "2026-07-23"
++		},
++		{
++			"type": "sponsorship",
++			"tag": "Sponsors",
++			"title": "Support Wireshark",
++			"description": "Help keep Wireshark free",
++			"description_sub": "and open source",
++			"body_text": "Your sponsorship funds development, infrastructure, and community events.",
++			"button_label": "Become a Sponsor",
++			"url": "https://wiresharkfoundation.org/donate/",
++			"image": "sponsors.png"
++		},
++		{
++			"type": "tips",
++			"tag": "Tip of the Day",
++			"title": "Quick Filter Shortcut",
++			"description": "Right-click any field to apply as filter",
++			"description_sub": "Press Ctrl+/ for more shortcuts",
++			"body_text": "You can also middle-click to append to the current filter, or Shift+click to create a negated filter.",
++			"button_label": "More Tips",
++			"url": "https://www.wireshark.org/docs/wsug_html_chunked/ChWorkBuildDisplayFilterSection.html",
++			"image": "tipstricks.png"
++		}
++	]
++}
+diff --git a/ui/qt/widgets/info_banner_widget.cpp b/ui/qt/widgets/info_banner_widget.cpp
+new file mode 100644
+index 0000000000..41bd121755
+--- /dev/null
++++ b/ui/qt/widgets/info_banner_widget.cpp
+@@ -0,0 +1,473 @@
++/* info_banner_widget.cpp
++ *
++ * Wireshark - Network traffic analyzer
++ * By Gerald Combs <gerald@wireshark.org>
++ * Copyright 1998 Gerald Combs
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include <ui/qt/widgets/info_banner_widget.h>
++
++#include <QDate>
++#include <QDesktopServices>
++#include <QFile>
++#include <QFont>
++#include <QFontMetrics>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QLinearGradient>
++#include <QMouseEvent>
++#include <QPainter>
++#include <QPainterPath>
++#include <QPixmap>
++#include <QUrl>
++#include <QtMath>
++
++InfoBannerWidget::InfoBannerWidget(QWidget *parent) :
++    QFrame(parent)
++    , current_slide_(0)
++    , auto_advance_timer_(new QTimer(this))
++{
++    slide_type_visible_[BannerEvents]      = true;
++    slide_type_visible_[BannerSponsorship] = true;
++    slide_type_visible_[BannerTips]        = true;
++
++    setMouseTracking(true);
++    setCursor(Qt::PointingHandCursor);
++    setFrameShape(QFrame::NoFrame);
++    setFixedSize(kCardWidth, kCardHeight);
++
++    loadSlidesFromResource(QStringLiteral(":/json/slides.json"));
++    loadSlidesFromResource(QStringLiteral(":/json/slides_custom.json"));
++    applySlideFilter();
++
++    connect(auto_advance_timer_, &QTimer::timeout, this, &InfoBannerWidget::advanceSlide);
++    auto_advance_timer_->start(kAutoAdvanceMs);
++}
++
++// ---------------------------------------------------------------------------
++// JSON loading
++// ---------------------------------------------------------------------------
++
++void InfoBannerWidget::loadSlidesFromResource(const QString &resource_path)
++{
++    QFile f(resource_path);
++    if (!f.open(QIODevice::ReadOnly))
++        return;
++
++    QJsonParseError err;
++    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
++    if (doc.isNull() || !doc.isObject()) {
++        qWarning("InfoBannerWidget: failed to parse %s: %s",
++                 qPrintable(resource_path), qPrintable(err.errorString()));
++        return;
++    }
++
++    QJsonObject root = doc.object();
++
++    int schema = root.value(QStringLiteral("schema_version")).toInt(0);
++    if (schema < 1) {
++        qWarning("InfoBannerWidget: unsupported schema_version in %s",
++                 qPrintable(resource_path));
++        return;
++    }
++
++    // -----------------------------------------------------------------------
++    // Parse optional "general" section
++    //
++    // Structure:
++    //   "general": {
++    //       "slide_types": {
++    //           "events":      { "color_start": "#rrggbb", "color_end": "#rrggbb" },
++    //           "sponsorship": { "color_start": "#rrggbb", "color_end": "#rrggbb" },
++    //           "tips":        { "color_start": "#rrggbb", "color_end": "#rrggbb" }
++    //       }
++    //   }
++    // -----------------------------------------------------------------------
++    if (root.contains(QStringLiteral("general"))) {
++        QJsonObject general = root.value(QStringLiteral("general")).toObject();
++
++        QJsonObject slide_types = general.value(QStringLiteral("slide_types")).toObject();
++        for (auto it = slide_types.constBegin(); it != slide_types.constEnd(); ++it) {
++            BannerSlideType mapped_type;
++            const QString &key = it.key();
++            if (key == QLatin1String("events")) {
++                mapped_type = BannerEvents;
++            } else if (key == QLatin1String("sponsorship")) {
++                mapped_type = BannerSponsorship;
++            } else if (key == QLatin1String("tips")) {
++                mapped_type = BannerTips;
++            } else {
++                qWarning("InfoBannerWidget: unknown slide type \"%s\" in general section",
++                         qPrintable(key));
++                continue;
++            }
++
++            QJsonObject type_obj = it.value().toObject();
++            SlideTypeConfig cfg;
++            QString cs = type_obj.value(QStringLiteral("color_start")).toString();
++            QString ce = type_obj.value(QStringLiteral("color_end")).toString();
++            if (!cs.isEmpty())
++                cfg.color_start = QColor(cs);
++            if (!ce.isEmpty())
++                cfg.color_end = QColor(ce);
++            if (cfg.color_start.isValid() || cfg.color_end.isValid())
++                slide_type_configs_[mapped_type] = cfg;
++        }
++    }
++
++    // -----------------------------------------------------------------------
++    // Parse "slides" array
++    // -----------------------------------------------------------------------
++    QJsonArray slides_arr = root.value(QStringLiteral("slides")).toArray();
++    for (const QJsonValue &val : slides_arr) {
++        if (!val.isObject())
++            continue;
++        QJsonObject obj = val.toObject();
++
++        QString type_str = obj.value(QStringLiteral("type")).toString();
++        BannerSlideType slide_type;
++        if (type_str == QLatin1String("events")) {
++            slide_type = BannerEvents;
++        } else if (type_str == QLatin1String("sponsorship")) {
++            slide_type = BannerSponsorship;
++        } else if (type_str == QLatin1String("tips")) {
++            slide_type = BannerTips;
++        } else {
++            qWarning("InfoBannerWidget: unknown slide type \"%s\", skipping",
++                     qPrintable(type_str));
++            continue;
++        }
++
++        BannerSlide slide;
++        slide.type            = slide_type;
++        slide.tag             = obj.value(QStringLiteral("tag")).toString();
++        slide.title           = obj.value(QStringLiteral("title")).toString();
++        slide.description     = obj.value(QStringLiteral("description")).toString();
++        slide.description_sub = obj.value(QStringLiteral("description_sub")).toString();
++        slide.body_text       = obj.value(QStringLiteral("body_text")).toString();
++        slide.button_label    = obj.value(QStringLiteral("button_label")).toString();
++        slide.url             = obj.value(QStringLiteral("url")).toString();
++        slide.image           = obj.value(QStringLiteral("image")).toString();
++
++        QString df = obj.value(QStringLiteral("date_from")).toString();
++        QString du = obj.value(QStringLiteral("date_until")).toString();
++        if (!df.isEmpty())
++            slide.date_from  = QDate::fromString(df, Qt::ISODate);
++        if (!du.isEmpty())
++            slide.date_until = QDate::fromString(du, Qt::ISODate);
++
++        all_slides_.append(slide);
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Filtering
++// ---------------------------------------------------------------------------
++
++void InfoBannerWidget::applySlideFilter()
++{
++    QDate today = QDate::currentDate();
++    slides_.clear();
++
++    for (const BannerSlide &slide : all_slides_) {
++        // Date range check
++        if (slide.date_from.isValid()  && today < slide.date_from)  continue;
++        if (slide.date_until.isValid() && today > slide.date_until) continue;
++
++        // Per-type visibility (set via preferences)
++        if (!slide_type_visible_.value(slide.type, true)) continue;
++
++        slides_.append(slide);
++    }
++
++    current_slide_ = 0;
++    update();
++}
++
++void InfoBannerWidget::setSlideTypeVisible(BannerSlideType type, bool visible)
++{
++    slide_type_visible_[type] = visible;
++    applySlideFilter();
++}
++
++// ---------------------------------------------------------------------------
++// Gradient colors
++//
++// Uses colors from the "general.slide_types" JSON section when available;
++// falls back to built-in defaults otherwise.
++// ---------------------------------------------------------------------------
++
++QPair<QColor, QColor> InfoBannerWidget::gradientForType(BannerSlideType type) const
++{
++    if (slide_type_configs_.contains(type)) {
++        const SlideTypeConfig &cfg = slide_type_configs_[type];
++        QColor cs = cfg.color_start.isValid() ? cfg.color_start : QColor(0x33, 0x33, 0x33);
++        QColor ce = cfg.color_end.isValid()   ? cfg.color_end   : QColor(0x22, 0x22, 0x22);
++        return { cs, ce };
++    }
++
++    // Built-in defaults (matches the values originally defined in slides.json
++    // "general.slide_types" so behaviour is identical when the section is absent)
++    switch (type) {
++    case BannerEvents:
++        return { QColor(0x1a, 0x4a, 0x6e), QColor(0x23, 0x4d, 0x6e) };
++    case BannerSponsorship:
++        return { QColor(0x2d, 0x4a, 0x3e), QColor(0x1e, 0x3a, 0x32) };
++    case BannerTips:
++        return { QColor(0x4a, 0x3d, 0x6e), QColor(0x3a, 0x2d, 0x5e) };
++    }
++    return { QColor(0x33, 0x33, 0x33), QColor(0x22, 0x22, 0x22) };
++}
++
++// ---------------------------------------------------------------------------
++// Auto-advance
++// ---------------------------------------------------------------------------
++
++void InfoBannerWidget::advanceSlide()
++{
++    if (slides_.isEmpty()) return;
++    current_slide_ = (current_slide_ + 1) % slides_.size();
++    update();
++}
++
++void InfoBannerWidget::updateStyleSheets()
++{
++    update();
++}
++
++// ---------------------------------------------------------------------------
++// Geometry helpers
++// ---------------------------------------------------------------------------
++
++QRect InfoBannerWidget::dotRect(int index) const
++{
++    const QRect r = rect();
++    int num_slides = slides_.size();
++    int total_w = num_slides * (kDotRadius * 2) + (num_slides - 1) * (kDotSpacing - kDotRadius * 2);
++    int dots_x  = (r.width()  - total_w)   / 2;
++    int dots_y  =  r.height() - kDotBottomMargin;
++    int margin  = 6;
++    return QRect(
++        dots_x + index * kDotSpacing - margin,
++        dots_y - kDotRadius - margin,
++        kDotRadius * 2 + margin * 2,
++        kDotRadius * 2 + margin * 2
++    );
++}
++
++int InfoBannerWidget::dotHitTest(const QPoint &pos) const
++{
++    for (int i = 0; i < slides_.size(); ++i) {
++        if (dotRect(i).contains(pos))
++            return i;
++    }
++    return -1;
++}
++
++QRect InfoBannerWidget::buttonRect() const
++{
++    const QRect r = rect();
++    int btn_h = 32;
++    int btn_w = r.width() - kContentLeftMargin - kContentRightMargin;
++    int btn_y = r.height() - kDotBottomMargin - kDotRadius * 2 - 12 - btn_h;
++    return QRect(kContentLeftMargin, btn_y, btn_w, btn_h);
++}
++
++// ---------------------------------------------------------------------------
++// Painting
++// ---------------------------------------------------------------------------
++
++void InfoBannerWidget::paintEvent(QPaintEvent * /* event */)
++{
++    if (slides_.isEmpty()) return;
++
++    QPainter painter(this);
++    painter.setRenderHint(QPainter::Antialiasing);
++
++    const BannerSlide &slide = slides_[current_slide_];
++    const QRectF r = rect();
++
++    // --- Background gradient (145 degrees) ---
++    double angle_rad = qDegreesToRadians(145.0);
++    double cx = r.width()  / 2.0;
++    double cy = r.height() / 2.0;
++    double dx = qCos(angle_rad - M_PI_2) * r.width();
++    double dy = qSin(angle_rad - M_PI_2) * r.height();
++
++    QPair<QColor, QColor> colors = gradientForType(slide.type);
++    QLinearGradient gradient(
++        QPointF(cx - dx / 2.0, cy - dy / 2.0),
++        QPointF(cx + dx / 2.0, cy + dy / 2.0)
++    );
++    gradient.setColorAt(0, colors.first);
++    gradient.setColorAt(1, colors.second);
++
++    painter.setPen(Qt::NoPen);
++    painter.setBrush(gradient);
++    painter.drawRoundedRect(r, 8, 8);
++
++    // --- Illustration area ---
++    QRectF illus_rect(0, 0, r.width(), kIllustrationHeight);
++    {
++        QPainterPath clip;
++        clip.moveTo(0, 8);
++        clip.quadTo(0, 0, 8, 0);
++        clip.lineTo(r.width() - 8, 0);
++        clip.quadTo(r.width(), 0, r.width(), 8);
++        clip.lineTo(r.width(), kIllustrationHeight);
++        clip.lineTo(0, kIllustrationHeight);
++        clip.closeSubpath();
++
++        if (!slide.image.isEmpty()) {
++            QString img_path = QStringLiteral(":/json/banners/") + slide.image;
++            QPixmap px(img_path);
++            if (!px.isNull()) {
++                painter.save();
++                painter.setClipPath(clip);
++                qreal dpr = devicePixelRatioF();
++                px.setDevicePixelRatio(dpr);
++                painter.drawPixmap(illus_rect.toRect(),
++                                   px.scaled(illus_rect.width()  * dpr,
++                                             illus_rect.height() * dpr,
++                                             Qt::KeepAspectRatioByExpanding,
++                                             Qt::SmoothTransformation));
++                painter.restore();
++            }
++        }
++
++        // Semi-transparent overlay on illustration
++        painter.save();
++        painter.setClipPath(clip);
++        painter.setBrush(QColor(0, 0, 0, 60));
++        painter.setPen(Qt::NoPen);
++        painter.drawRect(illus_rect);
++        painter.restore();
++    }
++
++    // --- Tag pill ---
++    QFont tag_font = font();
++    tag_font.setPixelSize(9);
++    tag_font.setBold(true);
++    tag_font.setCapitalization(QFont::AllUppercase);
++    painter.setFont(tag_font);
++
++    QString tag_text = slide.tag.toUpper();
++    QFontMetrics tag_fm(tag_font);
++    int pill_h = tag_fm.height() + 6;
++    int pill_w = tag_fm.horizontalAdvance(tag_text) + 16;
++    QRectF pill_rect(kContentLeftMargin,
++                     kIllustrationHeight + 12,
++                     pill_w, pill_h);
++
++    painter.setBrush(QColor(0, 0, 0, 60));
++    painter.setPen(Qt::NoPen);
++    painter.drawRoundedRect(pill_rect, pill_h / 2.0, pill_h / 2.0);
++
++    painter.setPen(QColor(255, 255, 255, 220));
++    painter.drawText(pill_rect, Qt::AlignCenter, tag_text);
++
++    // --- Title ---
++    QFont title_font = font();
++    title_font.setPixelSize(15);
++    title_font.setBold(true);
++    painter.setFont(title_font);
++    painter.setPen(Qt::white);
++
++    int content_w = r.width() - kContentLeftMargin - kContentRightMargin;
++    int text_y = kIllustrationHeight + 12 + pill_h + 10;
++    painter.drawText(QRectF(kContentLeftMargin, text_y, content_w, 22),
++                     Qt::AlignLeft | Qt::AlignVCenter,
++                     slide.title);
++
++    // --- Description highlight box ---
++    text_y += 26;
++    int box_h = 46;
++    QRectF box_rect(kContentLeftMargin, text_y, content_w, box_h);
++    painter.setBrush(QColor(255, 255, 255, 30));
++    painter.setPen(Qt::NoPen);
++    painter.drawRoundedRect(box_rect, 6, 6);
++
++    QFont desc_font = font();
++    desc_font.setPixelSize(12);
++    painter.setFont(desc_font);
++    painter.setPen(Qt::white);
++    painter.drawText(QRectF(kContentLeftMargin + 8, text_y + 4, content_w - 16, 18),
++                     Qt::AlignLeft | Qt::AlignVCenter,
++                     slide.description);
++
++    QFont desc_sub_font = font();
++    desc_sub_font.setPixelSize(11);
++    painter.setFont(desc_sub_font);
++    painter.setPen(QColor(255, 255, 255, 200));
++    painter.drawText(QRectF(kContentLeftMargin + 8, text_y + 24, content_w - 16, 16),
++                     Qt::AlignLeft | Qt::AlignVCenter,
++                     slide.description_sub);
++
++    // --- Action button ---
++    if (!slide.button_label.isEmpty()) {
++        QRect btn = buttonRect();
++        painter.setBrush(Qt::NoBrush);
++        painter.setPen(QPen(QColor(255, 255, 255, 180), 1));
++        painter.drawRoundedRect(btn, 4, 4);
++
++        QFont btn_font = font();
++        btn_font.setPixelSize(11);
++        btn_font.setBold(true);
++        painter.setFont(btn_font);
++        painter.setPen(Qt::white);
++        painter.drawText(btn, Qt::AlignCenter, slide.button_label);
++    }
++
++    // --- Navigation dots ---
++    int num_slides = slides_.size();
++    int total_w = num_slides * (kDotRadius * 2) + (num_slides - 1) * (kDotSpacing - kDotRadius * 2);
++    int dots_x  = (r.width() - total_w) / 2;
++    int dots_y  = r.height() - kDotBottomMargin;
++
++    painter.setPen(Qt::NoPen);
++    for (int i = 0; i < num_slides; ++i) {
++        QRectF dot(dots_x + i * kDotSpacing,
++                   dots_y - kDotRadius,
++                   kDotRadius * 2, kDotRadius * 2);
++        painter.setBrush(i == current_slide_
++                         ? QColor(255, 255, 255, 230)
++                         : QColor(255, 255, 255, 100));
++        painter.drawEllipse(dot);
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Mouse handling
++// ---------------------------------------------------------------------------
++
++void InfoBannerWidget::mousePressEvent(QMouseEvent *event)
++{
++    if (event->button() != Qt::LeftButton) {
++        QFrame::mousePressEvent(event);
++        return;
++    }
++
++    int dot_index = dotHitTest(event->pos());
++    if (dot_index >= 0 && dot_index != current_slide_) {
++        current_slide_ = dot_index;
++        auto_advance_timer_->start(kAutoAdvanceMs);
++        update();
++        return;
++    }
++
++    if (current_slide_ >= 0 && current_slide_ < slides_.size()) {
++        const QString &url = slides_[current_slide_].url;
++        if (!url.isEmpty())
++            QDesktopServices::openUrl(QUrl(url));
++    }
++}
++
++void InfoBannerWidget::mouseMoveEvent(QMouseEvent *event)
++{
++    Q_UNUSED(event)
++    setCursor(Qt::PointingHandCursor);
++    QFrame::mouseMoveEvent(event);
++}
+diff --git a/ui/qt/widgets/info_banner_widget.h b/ui/qt/widgets/info_banner_widget.h
+new file mode 100644
+index 0000000000..a72d1898ba
+--- /dev/null
++++ b/ui/qt/widgets/info_banner_widget.h
+@@ -0,0 +1,94 @@
++/** @file
++ *
++ * Wireshark - Network traffic analyzer
++ * By Gerald Combs <gerald@wireshark.org>
++ * Copyright 1998 Gerald Combs
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef INFO_BANNER_WIDGET_H
++#define INFO_BANNER_WIDGET_H
++
++#include <QDate>
++#include <QFrame>
++#include <QColor>
++#include <QString>
++#include <QList>
++#include <QMap>
++#include <QPair>
++#include <QTimer>
++
++enum BannerSlideType {
++    BannerEvents,
++    BannerSponsorship,
++    BannerTips,
++};
++
++/**
++ * Per-type visual configuration loaded from the "general.slide_types"
++ * section of slides.json.  Colors default to the built-in palette when
++ * the section is absent or a type is not listed.
++ */
++struct SlideTypeConfig {
++    QColor color_start;
++    QColor color_end;
++};
++
++struct BannerSlide {
++    BannerSlideType type;
++    QString tag;            // short label shown as pill/badge
++    QString title;
++    QString description;    // primary text in the highlight box
++    QString description_sub; // secondary line in the highlight box
++    QString body_text;      // additional paragraph below highlight box
++    QString button_label;   // action button text
++    QString url;            // click target
++    QString image;          // banner image filename under :/json/banners/
++    QDate date_from;        // slide hidden before this date (invalid = always visible)
++    QDate date_until;       // slide hidden after this date  (invalid = always visible)
++};
++
++class InfoBannerWidget : public QFrame {
++    Q_OBJECT
++public:
++    explicit InfoBannerWidget(QWidget *parent = nullptr);
++
++    void updateStyleSheets();
++    void setSlideTypeVisible(BannerSlideType type, bool visible);
++
++protected:
++    void paintEvent(QPaintEvent *event) override;
++    void mousePressEvent(QMouseEvent *event) override;
++    void mouseMoveEvent(QMouseEvent *event) override;
++
++private:
++    QList<BannerSlide> all_slides_;   // unfiltered master list
++    QList<BannerSlide> slides_;       // currently visible slides
++    int current_slide_;
++    QTimer *auto_advance_timer_;
++
++    QMap<BannerSlideType, bool>           slide_type_visible_;
++    QMap<BannerSlideType, SlideTypeConfig> slide_type_configs_;
++
++    void loadSlidesFromResource(const QString &resource_path);
++    void applySlideFilter();
++    void advanceSlide();
++    QPair<QColor, QColor> gradientForType(BannerSlideType type) const;
++    int  dotHitTest(const QPoint &pos) const;
++    QRect dotRect(int index) const;
++    QRect buttonRect() const;
++
++    // Layout constants
++    static constexpr int kCardWidth          = 300;
++    static constexpr int kCardHeight         = 360;
++    static constexpr int kIllustrationHeight = 120;
++    static constexpr int kDotRadius          = 4;
++    static constexpr int kDotSpacing         = 12;
++    static constexpr int kDotBottomMargin    = 16;
++    static constexpr int kContentLeftMargin  = 16;
++    static constexpr int kContentRightMargin = 16;
++    static constexpr int kAutoAdvanceMs      = 10000;
++};
++
++#endif // INFO_BANNER_WIDGET_H
+-- 
+2.43.0
+
